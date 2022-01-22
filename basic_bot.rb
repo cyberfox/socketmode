@@ -30,11 +30,7 @@ class BasicBot
     http.use_ssl = true
     request = Net::HTTP::Post.new(uri.path)
     request['Authorization'] = "Bearer #{app_token}"
-    puts "Making request:"
-    ap request
     response = http.request(request)
-    puts "Got response:"
-    ap response
     if response.code_type == Net::HTTPOK
       answer = JSON.parse(response.body)
       if answer['ok']
@@ -45,11 +41,36 @@ class BasicBot
     else
       raise Exception.new(response.code_type)
     end
+
+    puts self.class.weird_commands.keys.inspect
+    unless self.class.weird_commands.empty?
+      self.class.weird_commands.keys.each do |cmd|
+        puts "Registering #{cmd}"
+        register_command(cmd, &self.class.weird_commands[cmd])
+      end
+    end
+
+    @reconnect = false
   end
 
-  def slash(slash_message)
-    if slash_message['command'] == '/echo'
-      { response_type: 'ephemeral', text: slash_message['text'] }
+  def self.weird_commands
+    @weird_commands
+  end
+
+  def register_command(cmd, &block)
+    @registered_commands ||= Hash.new
+    @registered_commands[cmd] ||= Array.new
+    @registered_commands[cmd] << block
+  end
+
+  def slash(payload)
+    cmd = payload['command']
+    if (callbacks = @registered_commands[cmd])
+      callbacks.each do |cb|
+        # command, text, info (payload), client
+        result = cb.yield(cmd, payload['text'], payload[:channel_id], payload, @client)
+        return result if result
+      end
     end
   end
 
@@ -80,58 +101,64 @@ class BasicBot
     # For messages that aren't 'hello', 'slash_commands', or 'events_api'
     # we get all here.  Not sure what that'll be yet. TODO
   end
-end
 
-reconnect = false
+  def ack(ws, message, payload = nil)
+    p "Acking..."
+    ack = { payload: payload } if payload
+    ack ||= {}
+    ack['envelope_id'] = message['envelope_id']
+    ws.send(ack.to_json)
 
-def ack(ws, message, payload = nil)
-  p "Acking..."
-  ack = { payload: payload } if payload
-  ack ||= {}
-  ack['envelope_id'] = message['envelope_id']
-  ws.send(ack.to_json)
+    true
+  end
 
-  true
-end
+  def self.start
+    loop do
+      bot = self.new
+      yield bot if block_given?
 
-loop do
-  bot = BasicBot.new
+      EM.run do
+        trap('TERM') { stop }
+        trap('INT') { stop }
 
-  EM.run do
-    trap('TERM') { stop }
-    trap('INT') { stop }
+        ws = Faye::WebSocket::Client.new(bot.wsurl + '&debug_reconnects=true')
 
-    ws = Faye::WebSocket::Client.new(bot.wsurl + '&debug_reconnects=true')
+        ws.on :open do |event|
+          p [:open]
+        end
 
-    ws.on :open do |event|
-      p [:open]
-    end
+        ws.on :message do |event|
+          p [:message, event.data]
+          message = Message.new(JSON.parse(event.data))
+          # Instantly ack if it doesn't accept a response payload.
+          acked = bot.ack(ws, message) if message.envelope_id? && !message.accepts_response_payload
 
-    ws.on :message do |event|
-      p [:message, event.data]
-      message = Message.new(JSON.parse(event.data))
-      # Instantly ack if it doesn't accept a response payload.
-      acked = ack(ws, message) if message.envelope_id? && message.accepts_response_payload
+          payload = nil
 
-      payload = nil
+          case message.type
+          when 'hello' then bot.hello message.connection_info
+          when 'slash_commands' then payload = bot.slash message.payload
+          when 'app_mention' then bot.mention message.payload
+          when 'events_api' then bot.event message.payload
+          when 'disconnect' then @reconnect ||= message.reason == 'refresh_requested'
+          else bot.unrecognized message
+          end
 
-      case message.type
-        when 'hello' then bot.hello message.connection_info
-        when 'slash_commands' then payload = bot.slash message.payload
-        when 'app_mention' then bot.mention message.payload
-        when 'events_api' then bot.event message.payload
-        when 'disconnect' then reconnect ||= message.reason == 'refresh_requested'
-        else bot.unrecognized message
+          bot.ack(ws, message, payload) if message.envelope_id && !acked
+        end
+
+        ws.on :close do |event|
+          p [:close, event.code, event.reason]
+          ws = nil
+          EM.stop
+        end
       end
-
-      ack(ws, message, payload) if message.envelope_id && !acked
-    end
-
-    ws.on :close do |event|
-      p [:close, event.code, event.reason]
-      ws = nil
-      EM.stop
+      break unless @reconnect
     end
   end
-  break unless reconnect
+
+  def self.command(cmd, &block)
+    @weird_commands ||= Hash.new
+    @weird_commands[cmd] = block
+  end
 end
