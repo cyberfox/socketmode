@@ -42,11 +42,16 @@ class BasicBot
       raise Exception.new(response.code_type)
     end
 
-    puts self.class.weird_commands.keys.inspect
     unless self.class.weird_commands.empty?
       self.class.weird_commands.keys.each do |cmd|
         puts "Registering #{cmd}"
         register_command(cmd, &self.class.weird_commands[cmd])
+      end
+    end
+
+    unless self.class.mention_blocks.empty?
+      self.class.mention_blocks.each do |pattern, block|
+        register_mention(pattern, &block)
       end
     end
 
@@ -57,10 +62,19 @@ class BasicBot
     @weird_commands
   end
 
+  def self.mention_blocks
+    @mention_blocks
+  end
+
   def register_command(cmd, &block)
     @registered_commands ||= Hash.new
     @registered_commands[cmd] ||= Array.new
     @registered_commands[cmd] << block
+  end
+
+  def register_mention(pattern, &block)
+    @registered_mentions ||= Hash.new
+    @registered_mentions[pattern] = block
   end
 
   def slash(payload)
@@ -93,8 +107,17 @@ class BasicBot
   end
 
   def mention(event)
-    # p({channel: event.channel, text: 'Sorry, I don\'t know that command.'})
-    client.chat_postMessage({channel: event.channel, text: 'Sorry, I don\'t know that command.'})
+    cleaned_text = event.text.gsub(/^<@[A-Z0-9]+>\s*/, '')
+    handled = false
+    @registered_mentions.each do |pattern, callback|
+      if cleaned_text.match(pattern)
+        handled |= callback.yield(cleaned_text, event, event.channel, @client)
+      end
+    end
+    unless handled
+      # p({channel: event.channel, text: 'Sorry, I don\'t know that command.'})
+      client.chat_postMessage({channel: event.channel, text: 'Sorry, I don\'t know that command.'})
+    end
   end
 
   def unrecognized(message)
@@ -160,5 +183,10 @@ class BasicBot
   def self.command(cmd, &block)
     @weird_commands ||= Hash.new
     @weird_commands[cmd] = block
+  end
+
+  def self.mention(pattern, &block)
+    @mention_blocks ||= Hash.new
+    @mention_blocks[pattern] = block
   end
 end
