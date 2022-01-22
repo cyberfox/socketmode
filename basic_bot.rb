@@ -5,6 +5,13 @@ require 'faye/websocket'
 require 'eventmachine'
 require 'hashie'
 require 'slack-ruby-client'
+require 'ap'
+
+class NilClass
+  def empty?
+    true
+  end
+end
 
 class Message < Hashie::Mash
   include Hashie::Extensions::MergeInitializer
@@ -23,7 +30,11 @@ class BasicBot
     http.use_ssl = true
     request = Net::HTTP::Post.new(uri.path)
     request['Authorization'] = "Bearer #{app_token}"
+    puts "Making request:"
+    ap request
     response = http.request(request)
+    puts "Got response:"
+    ap response
     if response.code_type == Net::HTTPOK
       answer = JSON.parse(response.body)
       if answer['ok']
@@ -61,7 +72,7 @@ class BasicBot
   end
 
   def mention(event)
-    p({channel: event.channel, text: 'Sorry, I don\'t know that command.'})
+    # p({channel: event.channel, text: 'Sorry, I don\'t know that command.'})
     client.chat_postMessage({channel: event.channel, text: 'Sorry, I don\'t know that command.'})
   end
 

@@ -1,6 +1,7 @@
 GEM
   remote: https://rubygems.org/
   specs:
+    awesome_print (1.9.2)
     eventmachine (1.2.7)
     faraday (1.4.1)
       faraday-excon (~> 1.1)
@@ -31,13 +32,15 @@ GEM
     websocket-extensions (0.1.5)
 
 PLATFORMS
+  x86_64-darwin-17
   x86_64-darwin-18
 
 DEPENDENCIES
+  awesome_print
   eventmachine
   faye-websocket
   hashie
   slack-ruby-client
 
 BUNDLED WITH
-   2.2.9
+   2.2.20
