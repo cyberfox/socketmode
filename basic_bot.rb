@@ -59,10 +59,6 @@ class BasicBot
     @reconnect = false
   end
 
-  def self.behaviors
-    @behaviors
-  end
-
   def register_command(cmd, &block)
     @registered_commands ||= Hash.new
     @registered_commands[cmd] ||= Array.new
@@ -82,7 +78,7 @@ class BasicBot
   def slash(payload)
     cmd = payload['command']
     if (callbacks = @registered_commands[cmd])
-      callbacks.each do |cb|
+      callbacks&.each do |cb|
         # command, text, info (payload), client
         result = cb.yield(cmd, payload['text'], payload[:channel_id], payload, @client)
         return result if result
@@ -93,7 +89,7 @@ class BasicBot
   def mention(event)
     cleaned_text = event.text.gsub(/^<@[A-Z0-9]+>\s*/, '')
     handled = false
-    @registered_mentions.each do |pattern, callback|
+    @registered_mentions&.each do |pattern, callback|
       match = cleaned_text.match(pattern)
       if match
         handled = true
@@ -118,16 +114,21 @@ class BasicBot
     end
   end
 
+  # TODO(cyberfox - Do something with unrecognized messages.)
+  # At least note key info about them, or log them.
   def unrecognized(message)
     # For messages that aren't 'hello', 'slash_commands', or 'events_api'
     # we get all here.  Not sure what that'll be yet. TODO
   end
 
+  # TODO(cyberfox - Do something with unrecognized events.)
+  # At least note key info about them, or log them.
   def unrecognized_event(message)
     # For event_api messages that aren't 'message', or 'app_mention'
     # we get all here.  Not sure what that'll be yet. TODO
   end
 
+  # TODO(cyberfox - Do we need to do anything here, or just leave it alone?)
   def hello(connection_info)
     # Do what you will; this gets called each re-connection, so it's not a 'just once'
   end
@@ -144,8 +145,19 @@ class BasicBot
     end
   end
 
+  # TODO(cyberfox - Implement a configuration setup to allow bot messages to be seen.)
+  # Exclude self, always though...
   def allow_bot?
     false
+  end
+
+  def ack(ws, message, payload = nil)
+    ack = { payload: payload } if payload
+    ack ||= {}
+    ack['envelope_id'] = message['envelope_id']
+    ws.send(ack.to_json)
+
+    true
   end
 
   def self.start
@@ -199,6 +211,10 @@ class BasicBot
     end
   end
 
+  def self.behaviors
+    @behaviors
+  end
+
   def self.add_behavior(kind, key, block)
     @behaviors ||= Hash.new
     @behaviors[kind] ||= Hash.new
@@ -215,14 +231,5 @@ class BasicBot
 
   def self.message(pattern, &block)
     add_behavior(:messages, pattern, block)
-  end
-
-  def ack(ws, message, payload = nil)
-    ack = { payload: payload } if payload
-    ack ||= {}
-    ack['envelope_id'] = message['envelope_id']
-    ws.send(ack.to_json)
-
-    true
   end
 end
