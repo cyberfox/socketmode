@@ -42,28 +42,25 @@ class BasicBot
       raise Exception.new(response.code_type)
     end
 
-    unless self.class.weird_commands.empty?
-      self.class.weird_commands.keys.each do |cmd|
-        puts "Registering #{cmd}"
-        register_command(cmd, &self.class.weird_commands[cmd])
-      end
-    end
-
-    unless self.class.mention_blocks.empty?
-      self.class.mention_blocks.each do |pattern, block|
-        register_mention(pattern, &block)
+    unless self.class.behaviors.empty?
+      self.class.behaviors.each do |kind, key_block_map|
+        puts "Processing kind #{kind} - #{key_block_map.keys.inspect}"
+        case kind
+        when :mentions
+          key_block_map.each {|pattern, block| register_mention(pattern, &block) }
+        when :commands
+          key_block_map.each {|cmd, block| register_command(cmd, &block) }
+        when :messages
+          key_block_map.each {|pattern, block| register_message(pattern, &block)}
+        end
       end
     end
 
     @reconnect = false
   end
 
-  def self.weird_commands
-    @weird_commands
-  end
-
-  def self.mention_blocks
-    @mention_blocks
+  def self.behaviors
+    @behaviors
   end
 
   def register_command(cmd, &block)
@@ -77,6 +74,11 @@ class BasicBot
     @registered_mentions[pattern] = block
   end
 
+  def register_message(pattern, &block)
+    @registered_messages ||= Hash.new
+    @registered_messages[pattern] = block
+  end
+
   def slash(payload)
     cmd = payload['command']
     if (callbacks = @registered_commands[cmd])
@@ -88,35 +90,31 @@ class BasicBot
     end
   end
 
-  def hello(connection_info)
-    # Do what you will; this gets called each re-connection, so it's not a 'just once'
-  end
-
-  def event(payload)
-    event = Message.new(payload[:event])
-    if event.type == 'message'
-      message(event)
-    elsif event.type == 'app_mention'
-      mention(event)
-    end
-    # Handle arbitrary event messages, including type: 'message' and 'app_mention'
-  end
-
-  def message(event)
-    # Do nothing for most messages.
-  end
-
   def mention(event)
     cleaned_text = event.text.gsub(/^<@[A-Z0-9]+>\s*/, '')
     handled = false
     @registered_mentions.each do |pattern, callback|
-      if cleaned_text.match(pattern)
-        handled |= callback.yield(cleaned_text, event, event.channel, @client)
+      match = cleaned_text.match(pattern)
+      if match
+        handled = true
+        callback.yield(cleaned_text, match, event, event.channel, @client)
       end
     end
+
+    # If anything matched, we don't say this.  If something matched and didn't like
+    # the result, it has to handle its own errors.
     unless handled
       # p({channel: event.channel, text: 'Sorry, I don\'t know that command.'})
       client.chat_postMessage({channel: event.channel, text: 'Sorry, I don\'t know that command.'})
+    end
+  end
+
+  def message(event)
+    @registered_messages&.each do |pattern, callback|
+      match = event.text.match(pattern)
+      if match
+        callback.yield(event.text, match, event, event.channel, @client)
+      end
     end
   end
 
@@ -125,14 +123,29 @@ class BasicBot
     # we get all here.  Not sure what that'll be yet. TODO
   end
 
-  def ack(ws, message, payload = nil)
-    p "Acking..."
-    ack = { payload: payload } if payload
-    ack ||= {}
-    ack['envelope_id'] = message['envelope_id']
-    ws.send(ack.to_json)
+  def unrecognized_event(message)
+    # For event_api messages that aren't 'message', or 'app_mention'
+    # we get all here.  Not sure what that'll be yet. TODO
+  end
 
-    true
+  def hello(connection_info)
+    # Do what you will; this gets called each re-connection, so it's not a 'just once'
+  end
+
+  def event(payload)
+    event = Message.new(payload[:event])
+    case event.type
+    when 'message'
+      message(event)
+    when 'app_mention'
+      mention(event)
+    else
+      unrecognized_event(event)
+    end
+  end
+
+  def allow_bot?
+    false
   end
 
   def self.start
@@ -151,20 +164,26 @@ class BasicBot
         end
 
         ws.on :message do |event|
-          p [:message, event.data]
           message = Message.new(JSON.parse(event.data))
           # Instantly ack if it doesn't accept a response payload.
           acked = bot.ack(ws, message) if message.envelope_id? && !message.accepts_response_payload
 
           payload = nil
+          skip = false
+          if message.payload && message.payload['event'] && message.payload['event']['bot_id'] != nil
+            skip = !bot.allow_bot?
+          end
 
-          case message.type
-          when 'hello' then bot.hello message.connection_info
-          when 'slash_commands' then payload = bot.slash message.payload
-          when 'app_mention' then bot.mention message.payload
-          when 'events_api' then bot.event message.payload
-          when 'disconnect' then @reconnect ||= message.reason == 'refresh_requested'
-          else bot.unrecognized message
+          unless skip
+            p [:message, event.data]
+
+            case message.type
+            when 'hello' then bot.hello message.connection_info
+            when 'slash_commands' then payload = bot.slash message.payload
+            when 'events_api' then bot.event message.payload
+            when 'disconnect' then @reconnect ||= message.reason == 'refresh_requested'
+            else bot.unrecognized message
+            end
           end
 
           bot.ack(ws, message, payload) if message.envelope_id && !acked
@@ -180,13 +199,30 @@ class BasicBot
     end
   end
 
+  def self.add_behavior(kind, key, block)
+    @behaviors ||= Hash.new
+    @behaviors[kind] ||= Hash.new
+    @behaviors[kind][key] = block
+  end
+
   def self.command(cmd, &block)
-    @weird_commands ||= Hash.new
-    @weird_commands[cmd] = block
+    add_behavior(:commands, cmd, block)
   end
 
   def self.mention(pattern, &block)
-    @mention_blocks ||= Hash.new
-    @mention_blocks[pattern] = block
+    add_behavior(:mentions, pattern, block)
+  end
+
+  def self.message(pattern, &block)
+    add_behavior(:messages, pattern, block)
+  end
+
+  def ack(ws, message, payload = nil)
+    ack = { payload: payload } if payload
+    ack ||= {}
+    ack['envelope_id'] = message['envelope_id']
+    ws.send(ack.to_json)
+
+    true
   end
 end
